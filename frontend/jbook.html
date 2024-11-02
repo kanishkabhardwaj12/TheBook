@@ -169,7 +169,8 @@ body.canary {
     <div class="sidebar-left">
         <h1>J-Book</h1>
         <ul>
-            <li><a href="#">About</a></li>
+            <li><a href="about.html">About</a></li>
+
             <li><a href="#" id="theme-change">Theme Change</a></li>
         </ul>
     </div>
@@ -198,16 +199,31 @@ body.canary {
     // Theme change logic
     const themes = ['dark', 'light', 'cybernetic', 'vampire', 'canary'];
     let currentThemeIndex = 0;
-    document.getElementById('theme-change').addEventListener('click', function() {
-        document.body.classList.remove(themes[currentThemeIndex]);
-        currentThemeIndex = (currentThemeIndex + 1) % themes.length;
-        document.body.classList.add(themes[currentThemeIndex]);
-    });
+    const themeChangeLink = document.getElementById('theme-change');
+
+function updateTheme() {
+    // Remove the previous theme
+    document.body.classList.remove(themes[currentThemeIndex]);
+    
+    // Update the theme index and apply the new theme
+    currentThemeIndex = (currentThemeIndex + 1) % themes.length;
+    const newTheme = themes[currentThemeIndex];
+    document.body.classList.add(newTheme);
+    
+    // Update the theme change link text to show the current theme name
+    themeChangeLink.innerText = `Theme: ${newTheme.charAt(0).toUpperCase() + newTheme.slice(1)}`;
+}
+
+themeChangeLink.addEventListener('click', updateTheme);
+
+// Initialize with the default theme name
+themeChangeLink.innerText = `Theme: ${themes[currentThemeIndex].charAt(0).toUpperCase() + themes[currentThemeIndex].slice(1)}`;
+
 
     // Fetch posts from backend and display them
     async function loadPosts() {
     try {
-        const response = await fetch('http://localhost:8080/feed/user1'); // Correct URL
+        const response = await fetch('http://localhost:8080/feed/user1'); 
         const posts = await response.json();
 
         const mainContent = document.getElementById('main-content');
