@@ -1,85 +1,66 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"sort"
 	"time"
+
+	"github.com/go-redis/redis/v8"
 )
+
+var rdb *redis.Client
+var ctx = context.Background()
 
 // Define the User structure
 type User struct {
 	ID        string   `json:"id"`
 	Username  string   `json:"username"`
 	Password  string   `json:"password"`
-	Followers []string `json:"followers"` // IDs of users following this user
-	Following []string `json:"following"` // IDs of users this user is following
-	Posts     []string `json:"posts"`     // List of post IDs this user made
+	Followers []string `json:"followers"`
+	Following []string `json:"following"`
+	Posts     []string `json:"posts"`
 }
 
 // Define the Post structure
 type Post struct {
 	ID        string    `json:"id"`
-	UserID    string    `json:"user_id"` // ID of the user who made the post
+	UserID    string    `json:"user_id"`
 	Content   string    `json:"content"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// Mock database for users and posts (defined globally)
-var users = map[string]*User{
-	"user1": {
-		ID:        "user1",
-		Username:  "example_user1",
-		Password:  "hashed_password1",
-		Following: []string{"user2", "user3"}, // User1 is following user2 and user3
-		Posts:     []string{"post1", "post2"},
-	},
-	"user2": {
-		ID:        "user2",
-		Username:  "example_user2",
-		Password:  "hashed_password2",
-		Following: []string{"user1"}, // User2 is following user1
-		Posts:     []string{"post3"},
-	},
+func initRedis() {
+	rdb = redis.NewClient(&redis.Options{
+		Addr: "localhost:6379", // Redis server address
+	})
+
+	// Test the connection
+	_, err := rdb.Ping(ctx).Result()
+	if err != nil {
+		log.Fatalf("Could not connect to Redis: %v", err)
+	}
+	log.Println("Connected to Redis!")
 }
 
-var posts = map[string]Post{
-	"post1": {
-		ID:        "post1",
-		UserID:    "user1",
-		Content:   "This is the first post by user1",
-		CreatedAt: time.Now().Add(-1 * time.Hour),
-	},
-	"post2": {
-		ID:        "post2",
-		UserID:    "user1",
-		Content:   "This is the second post by user1",
-		CreatedAt: time.Now().Add(-2 * time.Hour),
-	},
-	"post3": {
-		ID:        "post3",
-		UserID:    "user2",
-		Content:   "This is a post by user2",
-		CreatedAt: time.Now().Add(-30 * time.Minute),
-	},
-}
-
-// Main function to set up routing and start the server
 func main() {
-	http.Handle("/feed/", enableCORS(http.HandlerFunc(GetForYouPage))) // Wrap with CORS middleware
+	initRedis()
+	defer rdb.Close()
+
+	http.Handle("/feed/", enableCORS(http.HandlerFunc(GetForYouPage)))
 
 	log.Println("Server started on :8080")
 	http.ListenAndServe(":8080", nil)
 }
 
-// Handler function to generate the "For You" page
+// Handler to fetch the feed
 func GetForYouPage(w http.ResponseWriter, r *http.Request) {
-	// Extract user ID from URL path
 	userID := r.URL.Path[len("/feed/"):]
 
-	// Fetch the user data
+	// Fetch user data
 	user, err := fetchUserByID(userID)
 	if err != nil {
 		http.Error(w, "User not found", http.StatusNotFound)
@@ -113,47 +94,75 @@ func GetForYouPage(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(feed)
 }
 
-// Fetch user data from the mock database by userID
+// Fetch user data from Redis by userID
 func fetchUserByID(userID string) (*User, error) {
-	user, exists := users[userID]
-	if !exists {
+	user := &User{}
+	// Get user info from Redis
+	val, err := rdb.HGetAll(ctx, "user:"+userID).Result()
+	if err != nil || len(val) == 0 {
 		return nil, fmt.Errorf("User not found")
 	}
+
+	// Convert the value to a User struct
+	user.ID = userID
+	user.Username = val["username"]
+	user.Password = val["password"]
+
+	// Fetch followers and following lists from Redis
+	user.Followers = fetchListFromRedis("followers:" + userID)
+	user.Following = fetchListFromRedis("following:" + userID)
+
 	return user, nil
 }
 
-// Fetch posts made by a specific user from the mock database
+// Fetch posts made by a specific user from Redis
 func fetchPostsByUserID(userID string) ([]Post, error) {
-	var userPosts []Post
-	for _, post := range posts {
-		if post.UserID == userID {
-			userPosts = append(userPosts, post)
+	var posts []Post
+	postIDs, err := rdb.LRange(ctx, "posts:"+userID, 0, -1).Result()
+	if err != nil {
+		return nil, err
+	}
+
+	for _, postID := range postIDs {
+		postData, err := rdb.HGetAll(ctx, "post:"+postID).Result()
+		if err != nil {
+			return nil, err
 		}
+		posts = append(posts, Post{
+			ID:        postID,
+			UserID:    userID,
+			Content:   postData["content"],
+			CreatedAt: parseTime(postData["created_at"]),
+		})
 	}
-	if len(userPosts) == 0 {
-		return nil, fmt.Errorf("No posts found for user")
+	return posts, nil
+}
+
+// Helper function to fetch lists (followers/following)
+func fetchListFromRedis(key string) []string {
+	val, err := rdb.LRange(ctx, key, 0, -1).Result()
+	if err != nil {
+		return nil
 	}
-	return userPosts, nil
+	return val
+}
+
+// Parse the time string to time.Time
+func parseTime(timeStr string) time.Time {
+	t, _ := time.Parse(time.RFC3339, timeStr)
+	return t
 }
 
 // CORS middleware to handle preflight requests and allow cross-origin access
 func enableCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Allow access from any origin
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-
-		// Allow methods like GET, POST, etc.
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE")
-
-		// Allow specific headers
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-
-		// Preflight request handling
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
-
 		next.ServeHTTP(w, r)
 	})
 }
